@@ -4338,6 +4338,22 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         return Futures.allAsList(futures);
     }
 
+    /**
+     * <p>Creates married keychain requiring majority of keys to spend (2-of-3, 3-of-5 and so on)</p>
+     *
+     * @param chain the local keychain
+     * @param followingAccountKeys the remote account extended public keys
+     */
+    public void addAndActivateMarriedHDChain(DeterministicKeyChain chain, List<DeterministicKey> followingAccountKeys) {
+        lock.lock();
+        try {
+            keychain.addAndActivateHDChain(chain);
+            keychain.addFollowingAccountKeys(followingAccountKeys);
+        } finally {
+            lock.unlock();
+        }
+    }
+
     // Checks to see if any coins are controlled by rotating keys and if so, spends them.
     private List<Transaction> maybeRotateKeys(@Nullable KeyParameter aesKey) {
         checkState(lock.isHeldByCurrentThread());

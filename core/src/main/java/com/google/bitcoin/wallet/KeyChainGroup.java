@@ -157,7 +157,7 @@ public class KeyChainGroup implements KeyBag {
 
         DeterministicKey accountKey = getActiveKeyChain().getWatchingKey();
         for (DeterministicKey key : followingAccountKeys) {
-            checkArgument(key.getPath().size() == 1, "Following keys have to be account keys");
+            //checkArgument(key.getPath().size() == 1, "Following keys have to be account keys");
             DeterministicKeyChain chain = DeterministicKeyChain.watchAndFollow(key);
             if (lookaheadSize >= 0)
                 chain.setLookaheadSize(lookaheadSize);
@@ -229,13 +229,7 @@ public class KeyChainGroup implements KeyBag {
         // We can't do auto upgrade here because we don't know the rotation time, if any.
         final DeterministicKeyChain chain = new DeterministicKeyChain(new SecureRandom());
         log.info("Creating and activating a new HD chain: {}", chain);
-        for (ListenerRegistration<KeyChainEventListener> registration : basic.getListeners())
-            chain.addEventListener(registration.listener, registration.executor);
-        if (lookaheadSize >= 0)
-            chain.setLookaheadSize(lookaheadSize);
-        if (lookaheadThreshold >= 0)
-            chain.setLookaheadThreshold(lookaheadThreshold);
-        chains.add(chain);
+        addAndActivateHDChain(chain);
     }
 
     /**
@@ -954,5 +948,15 @@ public class KeyChainGroup implements KeyBag {
      */
     public int getSigsRequiredToSpend() {
         return sigsRequiredToSpend;
+    }
+
+    public void addAndActivateHDChain(DeterministicKeyChain chain) {
+        for (ListenerRegistration<KeyChainEventListener> registration : basic.getListeners())
+            chain.addEventListener(registration.listener, registration.executor);
+        if (lookaheadSize >= 0)
+            chain.setLookaheadSize(lookaheadSize);
+        if (lookaheadThreshold >= 0)
+            chain.setLookaheadThreshold(lookaheadThreshold);
+        chains.add(chain);
     }
 }

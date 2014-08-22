@@ -188,7 +188,7 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
      */
     public DeterministicKeyChain(DeterministicKey watchingKey, long creationTimeSeconds) {
         checkArgument(watchingKey.isPubKeyOnly(), "Private subtrees not currently supported");
-        checkArgument(watchingKey.getPath().size() == 1, "You can only watch an account key currently");
+        //checkArgument(watchingKey.getPath().size() == 1, "You can only watch an account key currently");
         basicKeyChain = new BasicKeyChain();
         this.creationTimeSeconds = creationTimeSeconds;
         this.seed = null;

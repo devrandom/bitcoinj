@@ -17,6 +17,7 @@
 package com.google.bitcoin.crypto;
 
 import com.google.bitcoin.core.*;
+import com.google.bitcoin.wallet.DeterministicKeyChain;
 import com.google.common.base.Objects;
 import com.google.common.base.Objects.ToStringHelper;
 import com.google.common.collect.ImmutableList;
@@ -360,7 +361,21 @@ public class DeterministicKey extends ECKey {
         }
     }
 
+    /** external key with no parent available */
+    public static DeterministicKey deserializeB58(String base58) {
+        try {
+            return deserialize(null, Base58.decodeChecked(base58), true);
+        } catch (AddressFormatException e) {
+            throw new IllegalArgumentException(e);
+        }
+    }
+
     public static DeterministicKey deserialize(@Nullable DeterministicKey parent, byte[] serializedKey) {
+        return deserialize(parent, serializedKey, false);
+    }
+
+    public static DeterministicKey deserialize(@Nullable DeterministicKey parent, byte[] serializedKey,
+                                               boolean isExternal) {
         ByteBuffer buffer = ByteBuffer.wrap(serializedKey);
         int header = buffer.getInt();
         if (header != HEADER_PRIV && header != HEADER_PUB)
@@ -380,6 +395,8 @@ public class DeterministicKey extends ECKey {
             path = HDUtils.append(parent.getPath(), childNumber);
             if (path.size() != depth)
                 throw new IllegalArgumentException("Depth does not match");
+        } else if (isExternal) {
+            path = DeterministicKeyChain.ACCOUNT_ZERO_PATH;
         } else {
             if (depth == 0) {
                 path = ImmutableList.of();
