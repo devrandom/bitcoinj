@@ -27,6 +27,8 @@ import java.nio.channels.spi.SelectorProvider;
 import java.util.*;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import static com.google.common.base.Preconditions.checkState;
+
 /**
  * A class which manages a set of client connections. Uses Java NIO to select network events and processes them in a
  * single network processing thread.
@@ -140,7 +142,8 @@ public class NioClientManager extends AbstractExecutionThreadService implements 
         try {
             SocketChannel sc = SocketChannel.open();
             sc.configureBlocking(false);
-            sc.connect(serverAddress);
+            boolean result = sc.connect(serverAddress);
+            checkState(!result, "Unexpected immediate success for network connection");
             newConnectionChannels.offer(new SocketChannelAndParser(sc, parser));
             selector.wakeup();
         } catch (IOException e) {

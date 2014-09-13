@@ -18,6 +18,8 @@ package com.google.bitcoin.net;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.SocketOptions;
+import java.net.StandardSocketOptions;
 import java.nio.channels.*;
 import java.nio.channels.spi.SelectorProvider;
 import java.util.Iterator;
@@ -71,6 +73,8 @@ public class NioServer extends AbstractExecutionThreadService {
 
         sc = ServerSocketChannel.open();
         sc.configureBlocking(false);
+        log.info("reuse was " + sc.getOption(StandardSocketOptions.SO_REUSEADDR));
+        sc.setOption(StandardSocketOptions.SO_REUSEADDR, true);
         sc.socket().bind(bindAddress);
         selector = SelectorProvider.provider().openSelector();
         sc.register(selector, SelectionKey.OP_ACCEPT);
