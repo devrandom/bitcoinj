@@ -161,7 +161,7 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
         protected SecureRandom random;
         protected int bits = 128;
         protected String passphrase;
-        protected long seedCreationTimeSecs;
+        protected long seedCreationTimeSecs = Utils.currentTimeSeconds();
         protected byte[] entropy;
         protected DeterministicSeed seed;
 
@@ -223,6 +223,10 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
             return self();
         }
 
+        public T creationTimeSeconds(long seconds) {
+            this.seedCreationTimeSecs = seconds;
+            return self();
+        }
 
         public DeterministicKeyChain build() {
             checkState(random != null || entropy != null || seed != null, "Must provide either entropy or random");
