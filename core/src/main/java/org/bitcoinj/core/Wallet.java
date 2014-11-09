@@ -57,8 +57,6 @@ import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -766,9 +764,59 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         } finally {
             keychainLock.writeLock().unlock();
         }
-        queueOnScriptsAdded(scripts);
-        saveNow();
+        if (added > 0) {
+            queueOnScriptsChanged(scripts, true);
+            saveNow();
+        }
         return added;
+    }
+
+    /**
+     * Removes the given output scripts from the wallet that were being watched.
+     *
+     * @return true if successful
+     */
+    public boolean removeWatchedAddress(final Address address) {
+        return removeWatchedAddresses(ImmutableList.of(address));
+    }
+
+    /**
+     * Removes the given output scripts from the wallet that were being watched.
+     *
+     * @return true if successful
+     */
+    public boolean removeWatchedAddresses(final List<Address> addresses) {
+        List<Script> scripts = Lists.newArrayList();
+
+        for (Address address : addresses) {
+            Script script = ScriptBuilder.createOutputScript(address);
+            scripts.add(script);
+        }
+
+        return removeWatchedScripts(scripts);
+    }
+
+    /**
+     * Removes the given output scripts from the wallet that were being watched.
+     *
+     * @return true if successful
+     */
+    public boolean removeWatchedScripts(final List<Script> scripts) {
+        lock.lock();
+        try {
+            for (final Script script : scripts) {
+                if (!watchedScripts.contains(script))
+                    continue;
+
+                watchedScripts.remove(script);
+            }
+
+            queueOnScriptsChanged(scripts, false);
+            saveNow();
+            return true;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -889,6 +937,9 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
                     } else if (script.isSentToAddress()) {
                         byte[] pubkeyHash = script.getPubKeyHash();
                         keychain.markPubKeyHashAsUsed(pubkeyHash);
+                    } else if (script.isPayToScriptHash() && keychain.isMarried()) {
+                        Address a = Address.fromP2SHScript(tx.getParams(), script);
+                        keychain.markP2SHAddressAsUsed(a);
                     }
                 } catch (ScriptException e) {
                     // Just means we didn't understand the output of this transaction: ignore it.
@@ -2175,12 +2226,12 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         }
     }
 
-    protected void queueOnScriptsAdded(final List<Script> scripts) {
+    protected void queueOnScriptsChanged(final List<Script> scripts, final boolean isAddingScripts) {
         for (final ListenerRegistration<WalletEventListener> registration : eventListeners) {
             registration.executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    registration.listener.onScriptsAdded(Wallet.this, scripts);
+                    registration.listener.onScriptsChanged(Wallet.this, scripts, isAddingScripts);
                 }
             });
         }
@@ -3318,6 +3369,8 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
 
     public static class CompletionException extends RuntimeException {}
     public static class DustySendRequested extends CompletionException {}
+    public static class MultipleOpReturnRequested extends CompletionException {}
+
     /**
      * Thrown when we were trying to empty the wallet, and the total amount of money we were trying to empty after
      * being reduced for the fee was smaller than the min payment. Note that the missing field will be null in this
@@ -3360,17 +3413,29 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
             value = value.subtract(totalInput);
 
             List<TransactionInput> originalInputs = new ArrayList<TransactionInput>(req.tx.getInputs());
+            int opReturnCount = 0;
 
             // We need to know if we need to add an additional fee because one of our values are smaller than 0.01 BTC
             boolean needAtLeastReferenceFee = false;
-            if (req.ensureMinRequiredFee && !req.emptyWallet) { // min fee checking is handled later for emptyWallet
-                for (TransactionOutput output : req.tx.getOutputs())
+            if (req.ensureMinRequiredFee && !req.emptyWallet) { // Min fee checking is handled later for emptyWallet.
+                for (TransactionOutput output : req.tx.getOutputs()) {
                     if (output.getValue().compareTo(Coin.CENT) < 0) {
-                        if (output.getValue().compareTo(output.getMinNonDustValue()) < 0)
-                            throw new DustySendRequested();
                         needAtLeastReferenceFee = true;
+                        if (output.getValue().compareTo(output.getMinNonDustValue()) < 0) { // Is transaction a "dust".
+                            if (output.getScriptPubKey().isOpReturn()) { // Transactions that are OP_RETURN can't be dust regardless of their value.
+                                ++opReturnCount;
+                                continue;
+                            } else {
+                                throw new DustySendRequested();
+                            }
+                        }
                         break;
                     }
+                }
+            }
+
+            if (opReturnCount > 1) { // Only 1 OP_RETURN per transaction allowed.
+                throw new MultipleOpReturnRequested();
             }
 
             // Calculate a list of ALL potential candidates for spending and then ask a coin selector to provide us
@@ -3770,6 +3835,18 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
 
     //region Bloom filtering
 
+    @Override
+    public void beginBloomFilterCalculation() {
+        lock.lock();
+        keychainLock.readLock().lock();
+    }
+
+    @Override
+    public void endBloomFilterCalculation() {
+        keychainLock.readLock().unlock();
+        lock.unlock();
+    }
+
     /**
      * Returns the number of distinct data items (note: NOT keys) that will be inserted into a bloom filter, when it
      * is constructed.
@@ -3967,6 +4044,21 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         lock.lock();
         try {
             return ImmutableMap.copyOf(extensions);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Deserialize the wallet extension with the supplied data and then install it, replacing any existing extension
+     * that may have existed with the same ID.
+     */
+    public void deserializeExtension(WalletExtension extension, byte[] data) throws Exception {
+        lock.lock();
+        try {
+            // This method exists partly to establish a lock ordering of wallet > extension.
+            extension.deserializeWalletExtension(this, data);
+            extensions.put(extension.getWalletExtensionID(), extension);
         } finally {
             lock.unlock();
         }
@@ -4448,50 +4540,4 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         }
     }
     //endregion
-
-    /**
-     * Returns the wallet lock under which most operations happen. This is here to satisfy the
-     * {@link org.bitcoinj.core.PeerFilterProvider} interface and generally should not be used directly by apps.
-     * In particular, do <b>not</b> hold this lock if you're display a send confirm screen to the user or for any other
-     * long length of time, as it may cause processing holdups elsewhere. Instead, for the "confirm payment screen"
-     * use case you should complete a candidate transaction, present it to the user (e.g. for fee purposes) and then
-     * when they confirm - which may be quite some time later - recalculate the transaction and check if it's the same.
-     * If not, redisplay the confirm window and try again.
-     */
-    @Override
-    public Lock getLock() {
-        return new Lock() {
-            @Override
-            public void lock() {
-                lock.lock();
-                keychainLock.readLock().lock();
-            }
-
-            @Override
-            public void lockInterruptibly() throws InterruptedException {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
-            public boolean tryLock() {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
-            public boolean tryLock(long l, TimeUnit unit) throws InterruptedException {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
-            public void unlock() {
-                keychainLock.readLock().unlock();
-                lock.unlock();
-            }
-
-            @Override
-            public Condition newCondition() {
-                throw new UnsupportedOperationException();
-            }
-        };
-    }
 }

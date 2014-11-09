@@ -190,7 +190,7 @@ public class PeerGroup extends AbstractExecutionThreadService implements Transac
             }
         }
 
-        @Override public void onScriptsAdded(Wallet wallet, List<Script> scripts) {
+        @Override public void onScriptsChanged(Wallet wallet, List<Script> scripts, boolean isAddingScripts) {
             queueRecalc(true);
         }
 
@@ -564,6 +564,10 @@ public class PeerGroup extends AbstractExecutionThreadService implements Transac
      */
     public void addEventListener(PeerEventListener listener, Executor executor) {
         peerEventListeners.add(new ListenerRegistration<PeerEventListener>(checkNotNull(listener), executor));
+        for (Peer peer : getConnectedPeers())
+            peer.addEventListener(listener, executor);
+        for (Peer peer: getPendingPeers())
+            peer.addEventListener(listener, executor);
     }
 
     /**
@@ -576,7 +580,12 @@ public class PeerGroup extends AbstractExecutionThreadService implements Transac
 
     /** The given event listener will no longer be called with events. */
     public boolean removeEventListener(PeerEventListener listener) {
-        return ListenerRegistration.removeFromList(listener, peerEventListeners);
+        boolean result = ListenerRegistration.removeFromList(listener, peerEventListeners);
+        for (Peer peer : getConnectedPeers())
+            peer.removeEventListener(listener);
+        for (Peer peer : getPendingPeers())
+            peer.removeEventListener(listener);
+        return result;
     }
 
     /**
@@ -901,7 +910,15 @@ public class PeerGroup extends AbstractExecutionThreadService implements Transac
         try {
             checkNotNull(provider);
             checkState(!peerFilterProviders.contains(provider));
-            peerFilterProviders.add(provider);
+            // Insert provider at the start. This avoids various concurrency problems that could occur because we need
+            // all providers to be in a consistent, unchanging state whilst the filter is built. Providers can give
+            // this guarantee by taking a lock in their begin method, but if we add to the end of the list here, it
+            // means we establish a lock ordering a > b > c if that's the order the providers were added in. Given that
+            // the main wallet will usually be first, this establishes an ordering wallet > other-provider, which means
+            // other-provider can then not call into the wallet itself. Other providers installed by the API user should
+            // come first so the expected ordering is preserved. This can also manifest itself in providers that use
+            // synchronous RPCs into an actor instead of locking, but the same issue applies.
+            peerFilterProviders.add(0, provider);
 
             // Don't bother downloading block bodies before the oldest keys in all our wallets. Make sure we recalculate
             // if a key is added. Of course, by then we may have downloaded the chain already. Ideally adding keys would

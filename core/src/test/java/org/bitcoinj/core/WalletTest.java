@@ -19,10 +19,14 @@ package org.bitcoinj.core;
 
 import org.bitcoinj.core.Wallet.SendRequest;
 import org.bitcoinj.crypto.*;
+import org.bitcoinj.script.Script;
+import org.bitcoinj.script.ScriptBuilder;
+import org.bitcoinj.script.ScriptOpCodes;
 import org.bitcoinj.signers.StatelessTransactionSigner;
 import org.bitcoinj.signers.TransactionSigner;
 import org.bitcoinj.store.BlockStoreException;
 import org.bitcoinj.store.MemoryBlockStore;
+import org.bitcoinj.store.UnreadableWalletException;
 import org.bitcoinj.store.WalletProtobufSerializer;
 import org.bitcoinj.testing.*;
 import org.bitcoinj.utils.ExchangeRate;
@@ -348,7 +352,6 @@ public class WalletTest extends TestWithWallet {
         assertEquals("Wrong number of ALL.3", 1, wallet.getTransactions(true).size());
         assertEquals(TransactionConfidence.Source.SELF, t2.getConfidence().getSource());
         assertEquals(Transaction.Purpose.USER_PAYMENT, t2.getPurpose());
-        assertEquals(wallet.getChangeAddress(), t2.getOutput(1).getScriptPubKey().getToAddress(params));
 
         // Do some basic sanity checks.
         basicSanityChecks(wallet, t2, destination);
@@ -362,28 +365,31 @@ public class WalletTest extends TestWithWallet {
     }
 
     private void receiveATransaction(Wallet wallet, Address toAddress) throws Exception {
-        Coin v1 = COIN;
-        final ListenableFuture<Coin> availFuture = wallet.getBalanceFuture(v1, Wallet.BalanceType.AVAILABLE);
-        final ListenableFuture<Coin> estimatedFuture = wallet.getBalanceFuture(v1, Wallet.BalanceType.ESTIMATED);
+        receiveATransactionAmount(wallet, toAddress, COIN);
+    }
+
+    private void receiveATransactionAmount(Wallet wallet, Address toAddress, Coin amount) throws IOException {
+        final ListenableFuture<Coin> availFuture = wallet.getBalanceFuture(amount, Wallet.BalanceType.AVAILABLE);
+        final ListenableFuture<Coin> estimatedFuture = wallet.getBalanceFuture(amount, Wallet.BalanceType.ESTIMATED);
         assertFalse(availFuture.isDone());
         assertFalse(estimatedFuture.isDone());
         // Send some pending coins to the wallet.
-        Transaction t1 = sendMoneyToWallet(wallet, v1, toAddress, null);
+        Transaction t1 = sendMoneyToWallet(wallet, amount, toAddress, null);
         Threading.waitForUserCode();
         final ListenableFuture<Transaction> depthFuture = t1.getConfidence().getDepthFuture(1);
         assertFalse(depthFuture.isDone());
         assertEquals(ZERO, wallet.getBalance());
-        assertEquals(v1, wallet.getBalance(Wallet.BalanceType.ESTIMATED));
+        assertEquals(amount, wallet.getBalance(Wallet.BalanceType.ESTIMATED));
         assertFalse(availFuture.isDone());
         // Our estimated balance has reached the requested level.
         assertTrue(estimatedFuture.isDone());
         assertEquals(1, wallet.getPoolSize(Pool.PENDING));
-        assertEquals(0, wallet.getPoolSize(WalletTransaction.Pool.UNSPENT));
+        assertEquals(0, wallet.getPoolSize(Pool.UNSPENT));
         // Confirm the coins.
         sendMoneyToWallet(wallet, t1, AbstractBlockChain.NewBlockType.BEST_CHAIN);
-        assertEquals("Incorrect confirmed tx balance", v1, wallet.getBalance());
-        assertEquals("Incorrect confirmed tx PENDING pool size", 0, wallet.getPoolSize(WalletTransaction.Pool.PENDING));
-        assertEquals("Incorrect confirmed tx UNSPENT pool size", 1, wallet.getPoolSize(WalletTransaction.Pool.UNSPENT));
+        assertEquals("Incorrect confirmed tx balance", amount, wallet.getBalance());
+        assertEquals("Incorrect confirmed tx PENDING pool size", 0, wallet.getPoolSize(Pool.PENDING));
+        assertEquals("Incorrect confirmed tx UNSPENT pool size", 1, wallet.getPoolSize(Pool.UNSPENT));
         assertEquals("Incorrect confirmed tx ALL pool size", 1, wallet.getTransactions(true).size());
         Threading.waitForUserCode();
         assertTrue(availFuture.isDone());
@@ -422,16 +428,18 @@ public class WalletTest extends TestWithWallet {
     }
 
     private void spendUnconfirmedChange(Wallet wallet, Transaction t2, KeyParameter aesKey) throws Exception {
+        if (wallet.getTransactionSigners().size() == 1)   // don't bother reconfiguring the p2sh wallet
+            wallet = roundTrip(wallet);
         Coin v3 = valueOf(0, 49);
         assertEquals(v3, wallet.getBalance());
         Wallet.SendRequest req = Wallet.SendRequest.to(new ECKey().toAddress(params), valueOf(0, 48));
         req.aesKey = aesKey;
-        Address a = req.changeAddress = new ECKey().toAddress(params);
         req.ensureMinRequiredFee = false;
         req.shuffleOutputs = false;
         wallet.completeTx(req);
         Transaction t3 = req.tx;
-        assertEquals(a, t3.getOutput(1).getScriptPubKey().getToAddress(params));
+        assertNotEquals(t2.getOutput(1).getScriptPubKey().getToAddress(params),
+                        t3.getOutput(1).getScriptPubKey().getToAddress(params));
         assertNotNull(t3);
         wallet.commitTx(t3);
         assertTrue(wallet.isConsistent());
@@ -1243,6 +1251,49 @@ public class WalletTest extends TestWithWallet {
     }
 
     @Test
+    public void removeWatchedAddresses() {
+        List<Address> addressesForRemoval = new ArrayList<Address>();
+        for (int i = 0; i < 10; i++) {
+            ECKey key = new ECKey();
+            Address watchedAddress = key.toAddress(params);
+            addressesForRemoval.add(watchedAddress);
+            wallet.addWatchedAddress(watchedAddress);
+        }
+
+        wallet.removeWatchedAddresses(addressesForRemoval);
+        for (Address addr : addressesForRemoval)
+            assertFalse(wallet.isAddressWatched(addr));
+
+        assertFalse(wallet.isRequiringUpdateAllBloomFilter());
+    }
+
+    @Test
+    public void removeScriptsBloomFilter() throws Exception {
+        List<Address> addressesForRemoval = new ArrayList<Address>();
+        for (int i = 0; i < 10; i++) {
+            ECKey key = new ECKey();
+            Address watchedAddress = key.toAddress(params);
+            addressesForRemoval.add(watchedAddress);
+            wallet.addWatchedAddress(watchedAddress);
+        }
+
+        wallet.removeWatchedAddresses(addressesForRemoval);
+
+        for (Address addr : addressesForRemoval) {
+            Transaction t1 = createFakeTx(params, CENT, addr);
+            StoredBlock b1 = createFakeBlock(blockStore, t1).storedBlock;
+
+            TransactionOutPoint outPoint = new TransactionOutPoint(params, 0, t1);
+
+            // Note that this has a 1e-12 chance of failing this unit test due to a false positive
+            assertFalse(wallet.getBloomFilter(1e-12).contains(outPoint.bitcoinSerialize()));
+
+            wallet.receiveFromBlock(t1, b1, BlockChain.NewBlockType.BEST_CHAIN, 0);
+            assertFalse(wallet.getBloomFilter(1e-12).contains(outPoint.bitcoinSerialize()));
+        }
+    }
+
+    @Test
     public void marriedKeychainBloomFilter() throws Exception {
         createMarriedWallet(2, 2);
         Address address = wallet.currentReceiveAddress();
@@ -1549,6 +1600,107 @@ public class WalletTest extends TestWithWallet {
         }
         Wallet.SendRequest req = Wallet.SendRequest.forTx(tx);
         wallet.completeTx(req);
+    }
+
+    @Test
+    public void opReturnOneOutputTest() throws Exception {
+        // Tests basic send of transaction with one output that doesn't transfer any value but just writes OP_RETURN.
+        receiveATransaction(wallet, myAddress);
+        Transaction tx = new Transaction(params);
+        Coin messagePrice = Coin.ZERO;
+        Script script = new ScriptBuilder().op(ScriptOpCodes.OP_RETURN).data("hello world!".getBytes()).build();
+        tx.addOutput(messagePrice, script);
+        SendRequest request = Wallet.SendRequest.forTx(tx);
+        wallet.completeTx(request);
+    }
+
+    @Test
+    public void opReturnOneOutputWithValueTest() throws Exception {
+        // Tests basic send of transaction with one output that destroys coins and has an OP_RETURN.
+        receiveATransaction(wallet, myAddress);
+        Transaction tx = new Transaction(params);
+        Coin messagePrice = CENT;
+        Script script = new ScriptBuilder().op(ScriptOpCodes.OP_RETURN).data("hello world!".getBytes()).build();
+        tx.addOutput(messagePrice, script);
+        SendRequest request = Wallet.SendRequest.forTx(tx);
+        wallet.completeTx(request);
+    }
+
+    @Test
+    public void opReturnTwoOutputsTest() throws Exception {
+        // Tests sending transaction where one output transfers BTC, the other one writes OP_RETURN.
+        receiveATransaction(wallet, myAddress);
+        Address notMyAddr = new ECKey().toAddress(params);
+        Transaction tx = new Transaction(params);
+        Coin messagePrice = Coin.ZERO;
+        Script script = new ScriptBuilder().op(ScriptOpCodes.OP_RETURN).data("hello world!".getBytes()).build();
+        tx.addOutput(CENT, notMyAddr);
+        tx.addOutput(messagePrice, script);
+        SendRequest request = Wallet.SendRequest.forTx(tx);
+        wallet.completeTx(request);
+    }
+
+    @Test(expected = Wallet.MultipleOpReturnRequested.class)
+    public void twoOpReturnsPerTransactionTest() throws Exception {
+        // Tests sending transaction where there are 2 attempts to write OP_RETURN scripts - this should fail and throw MultipleOpReturnRequested.
+        receiveATransaction(wallet, myAddress);
+        Transaction tx = new Transaction(params);
+        Coin messagePrice = Coin.ZERO;
+        Script script1 = new ScriptBuilder().op(ScriptOpCodes.OP_RETURN).data("hello world 1!".getBytes()).build();
+        Script script2 = new ScriptBuilder().op(ScriptOpCodes.OP_RETURN).data("hello world 2!".getBytes()).build();
+        tx.addOutput(messagePrice, script1);
+        tx.addOutput(messagePrice, script2);
+        SendRequest request = Wallet.SendRequest.forTx(tx);
+        wallet.completeTx(request);
+    }
+
+    @Test(expected = Wallet.DustySendRequested.class)
+    public void sendDustTest() throws InsufficientMoneyException {
+        // Tests sending dust, should throw DustySendRequested.
+        Transaction tx = new Transaction(params);
+        Address notMyAddr = new ECKey().toAddress(params);
+        tx.addOutput(Transaction.MIN_NONDUST_OUTPUT.subtract(SATOSHI), notMyAddr);
+        SendRequest request = Wallet.SendRequest.forTx(tx);
+        wallet.completeTx(request);
+    }
+
+    @Test
+    public void sendMultipleCentsTest() throws Exception {
+        receiveATransactionAmount(wallet, myAddress, Coin.COIN);
+        Transaction tx = new Transaction(params);
+        Address notMyAddr = new ECKey().toAddress(params);
+        tx.addOutput(COIN.CENT.subtract(SATOSHI), notMyAddr);
+        tx.addOutput(COIN.CENT.subtract(SATOSHI), notMyAddr);
+        tx.addOutput(COIN.CENT.subtract(SATOSHI), notMyAddr);
+        tx.addOutput(COIN.CENT.subtract(SATOSHI), notMyAddr);
+        SendRequest request = Wallet.SendRequest.forTx(tx);
+        wallet.completeTx(request);
+    }
+
+    @Test(expected = Wallet.DustySendRequested.class)
+    public void sendDustAndOpReturnWithoutValueTest() throws Exception {
+        // Tests sending dust and OP_RETURN without value, should throw DustySendRequested because sending sending dust is not allowed in any case.
+        receiveATransactionAmount(wallet, myAddress, Coin.COIN);
+        Transaction tx = new Transaction(params);
+        Address notMyAddr = new ECKey().toAddress(params);
+        Script script = new ScriptBuilder().op(ScriptOpCodes.OP_RETURN).data("hello world!".getBytes()).build();
+        tx.addOutput(Coin.ZERO, script);
+        tx.addOutput(Coin.SATOSHI, notMyAddr);
+        SendRequest request = Wallet.SendRequest.forTx(tx);
+        wallet.completeTx(request);
+    }
+
+    @Test(expected = Wallet.DustySendRequested.class)
+    public void sendDustAndMessageWithValueTest() throws Exception {
+        //Tests sending dust and OP_RETURN with value, should throw DustySendRequested
+        receiveATransaction(wallet, myAddress);
+        Transaction tx = new Transaction(params);
+        Address notMyAddr = new ECKey().toAddress(params);
+        Script script = new ScriptBuilder().op(ScriptOpCodes.OP_RETURN).data("hello world!".getBytes()).build();
+        tx.addOutput(Coin.CENT, script);
+        tx.addOutput(Transaction.MIN_NONDUST_OUTPUT.subtract(SATOSHI), notMyAddr);
+        SendRequest request = Wallet.SendRequest.forTx(tx);
+        wallet.completeTx(request);
     }
 
     @Test
@@ -2344,8 +2496,7 @@ public class WalletTest extends TestWithWallet {
         // We don't attempt to race an attacker against unconfirmed transactions.
 
         // Now round-trip the wallet and check the protobufs are storing the data correctly.
-        Protos.Wallet protos = new WalletProtobufSerializer().walletToProto(wallet);
-        wallet = new WalletProtobufSerializer().readWallet(params, null, protos);
+        wallet = roundTrip(wallet);
 
         tx = wallet.getTransaction(tx.getHash());
         checkNotNull(tx);
@@ -2358,6 +2509,11 @@ public class WalletTest extends TestWithWallet {
         wallet.sendCoins(broadcaster, address, wallet.getBalance());
         tx = broadcaster.waitForTransaction();
         assertArrayEquals(address.getHash160(), tx.getOutput(0).getScriptPubKey().getPubKeyHash());
+    }
+
+    private Wallet roundTrip(Wallet wallet) throws UnreadableWalletException {
+        Protos.Wallet protos = new WalletProtobufSerializer().walletToProto(wallet);
+        return new WalletProtobufSerializer().readWallet(params, null, protos);
     }
 
     @Test
@@ -2670,8 +2826,7 @@ public class WalletTest extends TestWithWallet {
         TransactionSigner signer = new NopTransactionSigner(true);
         wallet.addTransactionSigner(signer);
         assertEquals(2, wallet.getTransactionSigners().size());
-        Protos.Wallet protos = new WalletProtobufSerializer().walletToProto(wallet);
-        wallet = new WalletProtobufSerializer().readWallet(params, null, protos);
+        wallet = roundTrip(wallet);
         assertEquals(2, wallet.getTransactionSigners().size());
         assertTrue(wallet.getTransactionSigners().get(1).isReady());
     }
