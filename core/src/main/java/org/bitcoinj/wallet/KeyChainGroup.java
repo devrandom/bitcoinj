@@ -403,7 +403,8 @@ public class KeyChainGroup implements KeyBag {
 
     /** If the given P2SH address is "current", advance it to a new one. */
     private void maybeMarkCurrentAddressAsUsed(Address address) {
-        checkState(isMarried());
+        if (!isMarried())
+            return;
         checkArgument(address.isP2SHAddress());
         for (Map.Entry<KeyChain.KeyPurpose, Address> entry : currentAddresses.entrySet()) {
             if (entry.getValue() != null && entry.getValue().equals(address)) {
