@@ -360,7 +360,6 @@ public class KeyChainGroup implements KeyBag {
     }
 
     public void markP2SHAddressAsUsed(Address address) {
-        checkState(isMarried());
         checkArgument(address.isP2SHAddress());
         RedeemData data = findRedeemDataFromScriptHash(address.getHash160());
         if (data == null)
