@@ -79,7 +79,7 @@ public class DeterministicSeed implements EncryptableItem {
      * @param creationTimeSeconds When the seed was originally created, UNIX time.
      */
     public DeterministicSeed(List<String> mnemonicCode, @Nullable byte[] seed, String passphrase, long creationTimeSeconds) {
-        this((seed != null ? seed : MnemonicCode.toSeed(mnemonicCode, checkNotNull(passphrase))), mnemonicCode, creationTimeSeconds);
+        this((seed != null ? seed : MnemonicCode.toSeed(mnemonicCode, passphrase)), mnemonicCode, creationTimeSeconds);
     }
 
     /**
@@ -91,7 +91,7 @@ public class DeterministicSeed implements EncryptableItem {
      * @param creationTimeSeconds When the seed was originally created, UNIX time.
      */
     public DeterministicSeed(SecureRandom random, int bits, String passphrase, long creationTimeSeconds) {
-        this(getEntropy(random, bits), checkNotNull(passphrase), creationTimeSeconds);
+        this(getEntropy(random, bits), passphrase, creationTimeSeconds);
     }
 
     /**
@@ -104,7 +104,7 @@ public class DeterministicSeed implements EncryptableItem {
     public DeterministicSeed(byte[] entropy, String passphrase, long creationTimeSeconds) {
         checkArgument(entropy.length % 4 == 0, "entropy size in bits not divisible by 32");
         checkArgument(entropy.length * 8 >= DEFAULT_SEED_ENTROPY_BITS, "entropy size too small");
-        checkNotNull(passphrase);
+        //checkNotNull(passphrase);
 
         try {
             this.mnemonicCode = MnemonicCode.INSTANCE.toMnemonic(entropy);
