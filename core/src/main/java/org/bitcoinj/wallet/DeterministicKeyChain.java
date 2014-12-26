@@ -116,6 +116,8 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
     public static final ImmutableList<ChildNumber> ACCOUNT_ZERO_PATH = ImmutableList.of(ChildNumber.ZERO_HARDENED);
     public static final ImmutableList<ChildNumber> EXTERNAL_PATH = ImmutableList.of(ChildNumber.ZERO);
     public static final ImmutableList<ChildNumber> INTERNAL_PATH = ImmutableList.of(ChildNumber.ONE);
+    // m / 44' / 0' / 0'
+    public static final ImmutableList<ChildNumber> BIP44_ACCOUNT_PATH = ImmutableList.of(new ChildNumber(44, true), ChildNumber.ZERO_HARDENED, ChildNumber.ZERO_HARDENED);
 
     // We try to ensure we have at least this many keys ready and waiting to be handed out via getKey().
     // See docs for getLookaheadSize() for more info on what this is for. The -1 value means it hasn't been calculated
@@ -303,7 +305,7 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
      */
     public DeterministicKeyChain(DeterministicKey watchingKey, long creationTimeSeconds) {
         checkArgument(watchingKey.isPubKeyOnly(), "Private subtrees not currently supported");
-        checkArgument(watchingKey.getPath().size() == 1, "You can only watch an account key currently");
+        checkArgument(watchingKey.getPath().size() == getAccountPath().size(), "You can only watch an account key currently");
         basicKeyChain = new BasicKeyChain();
         this.creationTimeSeconds = creationTimeSeconds;
         this.seed = null;
@@ -413,7 +415,7 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
     }
 
     protected ImmutableList<ChildNumber> getAccountPath() {
-        return ACCOUNT_ZERO_PATH;
+        return BIP44_ACCOUNT_PATH;
     }
 
     private DeterministicKey encryptNonLeaf(KeyParameter aesKey, DeterministicKeyChain chain,
@@ -835,7 +837,7 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
                     boolean isMarried = !isFollowingKey && !chains.isEmpty() && chains.get(chains.size() - 1).isFollowing();
                     if (seed == null) {
                         DeterministicKey accountKey = new DeterministicKey(immutablePath, chainCode, pubkey, null, null);
-                        if (!accountKey.getPath().equals(ACCOUNT_ZERO_PATH))
+                        if (!accountKey.getPath().equals(BIP44_ACCOUNT_PATH))
                             throw new UnreadableWalletException("Expecting account key but found key with path: " +
                                     HDUtils.formatPath(accountKey.getPath()));
                         chain = factory.makeWatchingKeyChain(key, iter.peek(), accountKey, isFollowingKey, isMarried);
@@ -962,7 +964,7 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
         // anyway so there's nothing to decrypt.
         for (ECKey eckey : basicKeyChain.getKeys()) {
             DeterministicKey key = (DeterministicKey) eckey;
-            if (key.getPath().size() != 3) continue; // Not a leaf key.
+            if (key.getPath().size() != getAccountPath().size() + 2) continue; // Not a leaf key.
             checkState(key.isEncrypted());
             DeterministicKey parent = chain.hierarchy.get(checkNotNull(key.getParent()).getPath(), false, false);
             // Clone the key to the new decrypted hierarchy.

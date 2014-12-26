@@ -111,7 +111,8 @@ public class WalletTest extends TestWithWallet {
         List<DeterministicKey> followingKeys = Lists.newArrayList();
         for (int i = 0; i < numKeys - 1; i++) {
             final DeterministicKeyChain keyChain = new DeterministicKeyChain(new SecureRandom());
-            DeterministicKey partnerKey = DeterministicKey.deserializeB58(null, keyChain.getWatchingKey().serializePubB58());
+            DeterministicKey watchingKey = keyChain.getWatchingKey();
+            DeterministicKey partnerKey = DeterministicKey.deserializeB58(watchingKey.serializePubB58(), watchingKey.getParent().getPath());
             followingKeys.add(partnerKey);
             if (addSigners && i < threshold - 1)
                 wallet.addTransactionSigner(new KeyChainTransactionSigner(keyChain));
@@ -1157,8 +1158,7 @@ public class WalletTest extends TestWithWallet {
     @Test(expected = ECKey.MissingPrivateKeyException.class)
     public void watchingWallet() throws Exception {
         DeterministicKey watchKey = wallet.getWatchingKey();
-        String serialized = watchKey.serializePubB58();
-        watchKey = DeterministicKey.deserializeB58(null, serialized);
+        watchKey = DeterministicKey.deserializeB58(watchKey.serializePubB58(), watchKey.getParent().getPath());
         Wallet watchingWallet = Wallet.fromWatchingKey(params, watchKey);
         DeterministicKey key2 = watchingWallet.freshReceiveKey();
         assertEquals(myKey, key2);
@@ -2581,7 +2581,7 @@ public class WalletTest extends TestWithWallet {
         ECKey usedKey = wallet.findKeyFromPubHash(output.getHash160());
         assertEquals(goodKey.getCreationTimeSeconds(), usedKey.getCreationTimeSeconds());
         assertEquals(goodKey.getCreationTimeSeconds(), wallet.freshReceiveKey().getCreationTimeSeconds());
-        assertEquals("mrM3TpCnav5YQuVA1xLercCGJH4DXujMtv", usedKey.toAddress(params).toString());
+        assertEquals("n3GcCW4spuUQY4sEnDzNbY4cQLVy2Nf8hP", usedKey.toAddress(params).toString());
         DeterministicKeyChain c = fChains.get().get(1);
         assertEquals(c.getEarliestKeyCreationTime(), goodKey.getCreationTimeSeconds());
         assertEquals(2, fChains.get().size());

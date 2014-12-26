@@ -370,6 +370,18 @@ public class DeterministicKey extends ECKey {
     }
 
     /**
+     * Deserialize a base-58-encoded HD Key.
+     *  @param parentPath The parent path.
+     */
+    public static DeterministicKey deserializeB58(String base58, ImmutableList<ChildNumber> parentPath) {
+        try {
+            return deserialize(Base58.decodeChecked(base58), parentPath);
+        } catch (AddressFormatException e) {
+            throw new IllegalArgumentException(e);
+        }
+    }
+
+    /**
       * Deserialize an HD Key with no parent
       */
     public static DeterministicKey deserialize(byte[] serializedKey) {
@@ -419,6 +431,37 @@ public class DeterministicKey extends ECKey {
             return new DeterministicKey(path, chainCode, point, null, parent);
         } else {
             return new DeterministicKey(path, chainCode, new BigInteger(1, data), parent);
+        }
+    }
+
+    /**
+     * Deserialize an HD Key.
+     *  @param parentPath The path of the parent
+     */
+    public static DeterministicKey deserialize(byte[] serializedKey, ImmutableList<ChildNumber> parentPath) {
+        ByteBuffer buffer = ByteBuffer.wrap(serializedKey);
+        int header = buffer.getInt();
+        if (header != HEADER_PRIV && header != HEADER_PUB)
+            throw new IllegalArgumentException("Unknown header bytes: " + toBase58(serializedKey).substring(0, 4));
+        boolean pub = header == HEADER_PUB;
+        byte depth = buffer.get();
+        byte[] parentFingerprint = new byte[4];
+        buffer.get(parentFingerprint);
+        final int i = buffer.getInt();
+        final ChildNumber childNumber = new ChildNumber(i);
+        ImmutableList<ChildNumber> path = HDUtils.append(parentPath, childNumber);
+        if (path.size() != depth)
+            throw new IllegalArgumentException("Depth does not match");
+        byte[] chainCode = new byte[32];
+        buffer.get(chainCode);
+        byte[] data = new byte[33];
+        buffer.get(data);
+        checkArgument(!buffer.hasRemaining(), "Found unexpected data in key");
+        if (pub) {
+            ECPoint point = ECKey.CURVE.getCurve().decodePoint(data);
+            return new DeterministicKey(path, chainCode, point, null, null);
+        } else {
+            return new DeterministicKey(path, chainCode, new BigInteger(1, data), null);
         }
     }
 
