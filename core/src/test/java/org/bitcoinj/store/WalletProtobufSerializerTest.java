@@ -293,7 +293,8 @@ public class WalletProtobufSerializerTest {
         // create 2-of-2 married wallet
         myWallet = new Wallet(params);
         final DeterministicKeyChain partnerChain = new DeterministicKeyChain(new SecureRandom());
-        DeterministicKey partnerKey = DeterministicKey.deserializeB58(null, partnerChain.getWatchingKey().serializePubB58());
+        DeterministicKey watchingKey = partnerChain.getWatchingKey();
+        DeterministicKey partnerKey = DeterministicKey.deserializeB58(watchingKey.serializePubB58(), watchingKey.getParent().getPath());
         MarriedKeyChain chain = MarriedKeyChain.builder()
                 .random(new SecureRandom())
                 .followingKeys(partnerKey)
