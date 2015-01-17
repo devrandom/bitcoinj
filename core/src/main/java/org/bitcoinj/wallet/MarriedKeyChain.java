@@ -232,7 +232,7 @@ public class MarriedKeyChain extends DeterministicKeyChain {
     @Override
     protected void formatAddresses(boolean includePrivateKeys, NetworkParameters params, StringBuilder builder2) {
         for (DeterministicKeyChain followingChain : followingKeyChains) {
-            builder2.append(String.format("Following chain:  %s%n", followingChain.getWatchingKey().serializePubB58()));
+            builder2.append(String.format("Following chain:  %s%n", followingChain.getWatchingKey().serializePubB58(params)));
         }
         builder2.append(String.format("%n"));
         for (RedeemData redeemData : marriedKeysRedeemData.values())
@@ -244,6 +244,8 @@ public class MarriedKeyChain extends DeterministicKeyChain {
         builder.append(script.getToAddress(params));
         builder.append("  hash160:");
         builder.append(Utils.HEX.encode(script.getPubKeyHash()));
+        if (script.getCreationTimeSeconds() > 0)
+            builder.append("  creationTimeSeconds:").append(script.getCreationTimeSeconds());
         builder.append("\n");
     }
 

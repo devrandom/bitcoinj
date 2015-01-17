@@ -17,13 +17,17 @@
 
 package org.bitcoinj.wallet;
 
+import java.util.Arrays;
 import org.bitcoinj.core.*;
+import org.bitcoinj.crypto.TransactionSignature;
 import org.bitcoinj.params.MainNetParams;
+import org.bitcoinj.script.Script;
 import org.bitcoinj.script.ScriptBuilder;
 import org.bitcoinj.script.ScriptChunk;
 import com.google.common.collect.ImmutableList;
 import org.bitcoinj.wallet.DefaultRiskAnalysis;
 import org.bitcoinj.wallet.RiskAnalysis;
+import org.bitcoinj.wallet.DefaultRiskAnalysis.RuleViolation;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -38,7 +42,7 @@ public class DefaultRiskAnalysisTest {
     private static final NetworkParameters params = MainNetParams.get();
     private Wallet wallet;
     private final int TIMESTAMP = 1384190189;
-    private ECKey key1;
+    private static final ECKey key1 = new ECKey();
     private final ImmutableList<Transaction> NO_DEPS = ImmutableList.of();
 
     @Before
@@ -54,7 +58,6 @@ public class DefaultRiskAnalysisTest {
                 return TIMESTAMP;
             }
         };
-        key1 = new ECKey();
     }
 
     @Test
@@ -160,5 +163,42 @@ public class DefaultRiskAnalysisTest {
         assertEquals(DefaultRiskAnalysis.RuleViolation.NONE, DefaultRiskAnalysis.isStandard(tx));
         tx.addOutput(new TransactionOutput(params, null, COIN, nonStandardScript));
         assertEquals(DefaultRiskAnalysis.RuleViolation.SHORTEST_POSSIBLE_PUSHDATA, DefaultRiskAnalysis.isStandard(tx));
+    }
+
+    @Test
+    public void canonicalSignature() {
+        TransactionSignature sig = TransactionSignature.dummy();
+        Script scriptOk = ScriptBuilder.createInputScript(sig);
+        assertEquals(RuleViolation.NONE,
+                DefaultRiskAnalysis.isInputStandard(new TransactionInput(params, null, scriptOk.getProgram())));
+
+        byte[] sigBytes = sig.encodeToBitcoin();
+        // Appending a zero byte makes the signature uncanonical without violating DER encoding.
+        Script scriptUncanonicalEncoding = new ScriptBuilder().data(Arrays.copyOf(sigBytes, sigBytes.length + 1))
+                .build();
+        assertEquals(RuleViolation.SIGNATURE_CANONICAL_ENCODING,
+                DefaultRiskAnalysis.isInputStandard(new TransactionInput(params, null, scriptUncanonicalEncoding
+                        .getProgram())));
+    }
+
+    @Test
+    public void standardOutputs() throws Exception {
+        Transaction tx = new Transaction(params);
+        tx.addInput(params.getGenesisBlock().getTransactions().get(0).getOutput(0));
+        // A pay to address output
+        tx.addOutput(Coin.CENT, ScriptBuilder.createOutputScript(key1.toAddress(params)));
+        // A pay to pubkey output
+        tx.addOutput(Coin.CENT, ScriptBuilder.createOutputScript(key1));
+        tx.addOutput(Coin.CENT, ScriptBuilder.createOutputScript(key1));
+        // 1-of-2 multisig output.
+        ImmutableList<ECKey> keys = ImmutableList.of(key1, new ECKey());
+        tx.addOutput(Coin.CENT, ScriptBuilder.createMultiSigOutputScript(1, keys));
+        // 2-of-2 multisig output.
+        tx.addOutput(Coin.CENT, ScriptBuilder.createMultiSigOutputScript(2, keys));
+        // P2SH
+        tx.addOutput(Coin.CENT, ScriptBuilder.createP2SHOutputScript(1, keys));
+        // OP_RETURN
+        tx.addOutput(Coin.CENT, ScriptBuilder.createOpReturnScript("hi there".getBytes()));
+        assertEquals(RiskAnalysis.Result.OK, DefaultRiskAnalysis.FACTORY.create(wallet, tx, NO_DEPS).analyze());
     }
 }

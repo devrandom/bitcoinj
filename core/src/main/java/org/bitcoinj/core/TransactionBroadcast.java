@@ -16,9 +16,6 @@
 
 package org.bitcoinj.core;
 
-import org.bitcoinj.core.AbstractPeerEventListener;
-import org.bitcoinj.core.RejectMessage;
-import org.bitcoinj.core.Sha256Hash;
 import org.bitcoinj.utils.Threading;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
@@ -27,6 +24,7 @@ import com.google.common.util.concurrent.SettableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
@@ -44,16 +42,19 @@ public class TransactionBroadcast {
     private final SettableFuture<Transaction> future = SettableFuture.create();
     private final PeerGroup peerGroup;
     private final Transaction tx;
+    @Nullable private final Context context;
     private int minConnections;
-    private int numWaitingFor, numToBroadcastTo;
+    private int numWaitingFor;
 
     /** Used for shuffling the peers before broadcast: unit tests can replace this to make themselves deterministic. */
     @VisibleForTesting
     public static Random random = new Random();
     private Transaction pinnedTx;
 
-    public TransactionBroadcast(PeerGroup peerGroup, Transaction tx) {
+    // TODO: Context being owned by BlockChain isn't right w.r.t future intentions so it shouldn't really be optional here.
+    TransactionBroadcast(PeerGroup peerGroup, @Nullable Context context, Transaction tx) {
         this.peerGroup = peerGroup;
+        this.context = context;
         this.tx = tx;
         this.minConnections = Math.max(1, peerGroup.getMinBroadcastConnections());
     }
@@ -101,7 +102,8 @@ public class TransactionBroadcast {
             // a big effect.
             List<Peer> peers = peerGroup.getConnectedPeers();    // snapshots
             // We intern the tx here so we are using a canonical version of the object (as it's unfortunately mutable).
-            pinnedTx = peerGroup.getMemoryPool().intern(tx);
+            // TODO: Once confidence state is moved out of Transaction we can kill off this step.
+            pinnedTx = context != null ? context.getConfidenceTable().intern(tx) : tx;
             // Prepare to send the transaction by adding a listener that'll be called when confidence changes.
             // Only bother with this if we might actually hear back:
             if (minConnections > 1)
@@ -115,7 +117,7 @@ public class TransactionBroadcast {
             // our version message, as SPV nodes cannot relay it doesn't give away any additional information
             // to skip the inv here - we wouldn't send invs anyway.
             int numConnected = peers.size();
-            numToBroadcastTo = (int) Math.max(1, Math.round(Math.ceil(peers.size() / 2.0)));
+            int numToBroadcastTo = (int) Math.max(1, Math.round(Math.ceil(peers.size() / 2.0)));
             numWaitingFor = (int) Math.ceil((peers.size() - numToBroadcastTo) / 2.0);
             Collections.shuffle(peers, random);
             peers = peers.subList(0, numToBroadcastTo);
@@ -143,9 +145,8 @@ public class TransactionBroadcast {
 
     private class ConfidenceChange implements TransactionConfidence.Listener {
         @Override
-        public void onConfidenceChanged(Transaction tx, ChangeReason reason) {
+        public void onConfidenceChanged(TransactionConfidence conf, ChangeReason reason) {
             // The number of peers that announced this tx has gone up.
-            final TransactionConfidence conf = tx.getConfidence();
             int numSeenPeers = conf.numBroadcastPeers();
             boolean mined = tx.getAppearsInHashes() != null;
             log.info("broadcastTransaction: {}:  TX {} seen by {} peers{}", reason, pinnedTx.getHashAsString(),
@@ -165,8 +166,8 @@ public class TransactionBroadcast {
                 // We're done! It's important that the PeerGroup lock is not held (by this thread) at this
                 // point to avoid triggering inversions when the Future completes.
                 log.info("broadcastTransaction: {} complete", pinnedTx.getHashAsString());
-                tx.getConfidence().removeEventListener(this);
                 peerGroup.removeEventListener(rejectionListener);
+                conf.removeEventListener(this);
                 future.set(pinnedTx);  // RE-ENTRANCY POINT
             }
         }
