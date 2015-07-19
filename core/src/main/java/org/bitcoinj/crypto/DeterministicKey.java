@@ -320,7 +320,12 @@ public class DeterministicKey extends ECKey {
     /** {@inheritDoc} */
     @Override
     public boolean hasPrivKey() {
-        return findOrDerivePrivateKey() != null;
+        DeterministicKey cursor = this;
+        while (cursor != null) {
+            if (cursor.priv != null) return true;
+            cursor = cursor.parent;
+        }
+        return false;
     }
 
     @Nullable
