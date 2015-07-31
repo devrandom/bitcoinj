@@ -1228,7 +1228,8 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
     }
 
     // For internal usage only
-    /* package */ List<ECKey> getKeys(boolean includeLookahead) {
+    // MIRON
+    public List<ECKey> getKeys(boolean includeLookahead) {
         List<ECKey> keys = basicKeyChain.getKeys();
         if (!includeLookahead) {
             int treeSize = internalKey.getPath().size();
